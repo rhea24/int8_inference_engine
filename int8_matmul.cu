@@ -20,20 +20,13 @@ using namespace nvcuda;
 #define THREADS_PER_BLOCK (WARP_SIZE * WARPS_PER_BLOCK)
 
 __global__ void wmma_int8_kernel(int8_t* A, int8_t* B, int32_t* C, int M, int N, int K) {
-    /*
-    CUDA Kernel to 
-    */
-
-    // Allocate shared memory
+    /* CUDA Kernel to perform tiled Int8 GEMM */
+    
     __shared__ int8_t smem_A[BLOCK_M * BLOCK_K];
     __shared__ int8_t smem_B[BLOCK_K * BLOCK_N];
     
-    // Need to schedule by warps, not threads because 16x16 = 256 numbers 
-    // needed as input to tensor core operation but a single thread doesn't 
-    // have access to that many registers at once, so the Warp together holds the full matrix
-    
-    int blockRow = blockIdx.x * BLOCK_M; // starting row of 64x64 tile globally
-    int blockCol = blockIdx.y * BLOCK_N; // starting col of 64x64 tile globally
+    int blockRow = blockIdx.x * BLOCK_M; // starting row of 64x64 tile (global)
+    int blockCol = blockIdx.y * BLOCK_N; // starting col of 64x64 tile (global)
     int warpId = threadIdx.x / WARP_SIZE; // local Warp ID within block, 0 -> 15
 
     // map Warp ID to 2D grid (4x4) inside block
@@ -42,14 +35,14 @@ __global__ void wmma_int8_kernel(int8_t* A, int8_t* B, int32_t* C, int M, int N,
 
     // declare registers for tensor core fragments
     wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, int8_t, wmma::row_major> a_frag; // holds a fragment of the 16x16 chunk of matrix A
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, int8_t, wmma::row_major> b_frag; // same for 16x16 chunk of B
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, int8_t, wmma::row_major> b_frag; // same for B
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, int32_t> c_frag; // result
 
-    wmma::fill_fragment(c_frag, 0); // initialize result accumulator
+    wmma::fill_fragment(c_frag, 0);
 
     // loop through the tiles: width of A and height of B
     for (int k = 0; k < K; k += BLOCK_K) {
-        // -- Cooperative Load from Global to Shared Memory --
+        // Cooperative Load from Global to Shared Memory
 
         int8_t* A_tile_ptr = A + (blockRow * K) + k; // top left corner of 64x64 tile in global mem
         
@@ -95,12 +88,11 @@ __global__ void wmma_int8_kernel(int8_t* A, int8_t* B, int32_t* C, int M, int N,
         __syncthreads();
     }
 
-    // where in C are we?
+    // where in C are we calculating for
     int cRow = blockRow + warpRow;
     int cCol = blockCol + warpCol;
     if (cRow < M && cCol < N) {
-        // write back to 'c'
-        wmma::store_matrix_sync(C + cRow * N + cCol, c_frag, N, wmma::mem_row_major); // 
+        wmma::store_matrix_sync(C + cRow * N + cCol, c_frag, N, wmma::mem_row_major);
     }
 
 }
